@@ -1,0 +1,7 @@
+1.) Download roblox studio and open a new baseplate
+
+2.) Add two new folders under the workspace labeled "IgnoreList" and "Explosions"
+
+3.) Download each folder and drag each script to it's matching respository in studio as labeled based on the folder it was in
+
+4.) If animations don't work you will need to reupload each animation to your profile so you can have permission to use them. Aside from that, all baseline foundational mechanics such as projectile ray tracing and hit detection will be working.
