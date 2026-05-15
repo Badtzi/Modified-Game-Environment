@@ -1,0 +1,474 @@
+================================================================================
+                    TREK 4.0 — SCRIPT INTERCONNECTION MAP
+================================================================================
+
+LEGEND:
+  ───────>  RemoteEvent (client-to-server)
+  <───────  RemoteEvent (server-to-client)
+  <=======  RemoteEvent (server-to-all-clients)
+  - - - ->  BindableEvent / BindableFire
+  ........> Attribute channel (SetAttribute → GetAttribute)
+  ~~~~~~~~> Module require()
+  [shared.*] Global shared table read/write
+
+
+================================================================================
+ LAYER 1: BOOTSTRAP (runs first, populates shared.S)
+================================================================================
+
+  SERVER:  TREKServerGeneral.luau
+           Writes: shared.S (all TREK_SERVICES children mapped by name)
+                   shared.S.globalConfig
+                   shared.S.trekFuncs  (LeaderBoardModule)
+                   shared.S.trekGibs   (TREKGibsModule)
+                   shared.S.trekServerFuncs (TREKServerFunctions)
+           Requires: LeaderBoardModule, TREKExplosionModule, TREKServerFunctions
+
+  CLIENT:  LocalHandler.luau (StarterPlayerScripts)
+           Writes: shared.S (client-side mirror of TREK_SERVICES)
+                   shared.S.globalConfig
+                   shared.S.trekFuncs  (LeaderBoardModule)
+           Listens: Feed, SystemMessage, LocalSound (from server)
+
+
+================================================================================
+ LAYER 2: SERVER SCRIPTS (ServerScriptService)
+================================================================================
+
+  All read shared.S from TREKServerGeneral bootstrap.
+
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  TREKServerDamage.luau                                              │
+  │  Purpose: Processes all bullet/projectile damage                    │
+  │  Requires: TREKDamageModule, TREKUniversalFunctions                 │
+  │  Listens:  Damage ──────────────────── from Gun.luau                │ 
+  │  Fires:    SystemMessage <===========> all clients                  │
+  │  Calls:    shared.VoicePlay (Hit, CauseDamage)                      │
+  └─────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  TREKServerBipod.luau                                               │
+  │  Purpose: Server authority for bipod deploy/undeploy                │
+  │  Listens:  BipodDeploy ─────────────── from TREKBipodController     │
+  │            BipodUndeploy ────────────── from TREKBipodController    │
+  │            BipodAim ─────────────────── from TREKBipodController    │
+  │  Writes:   shared.BipodForceExit (callable from any server script)  │
+  │  Sets:     BipodActive, BipodDeploying (on character)               │
+  │  Reads:    CanDeployBipod (on workspace parts)                      │
+  └─────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  TREKServerMelee.luau                                               │
+  │  Purpose: Melee damage + takedown system                            │
+  │  Requires: TREKDamageModule, TREKUniversalFunctions                 │
+  │  Listens:  MeleeDamage ─────────────── from Melee.luau              │
+  │            TakedownRequest ──────────── from Melee.luau             │
+  │  Fires:    TakedownSync <────────────── to victim client            │
+  │            TakedownCancel <──────────── to attacker client          │
+  │  Sets:     InTakedown (on attacker + victim characters)             │
+  └─────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  TREKServerExplosive.luau                                           │
+  │  Purpose: Grenade/explosive spawning, detonation, damage            │
+  │  Requires: TREKExplosionModule, TREKDamageModule                    │
+  │  Listens:  ExplosiveThrow ───────────── from Explosive.luau         │
+  │            ExplosiveDrop ────────────── from Explosive.luau         │
+  │            ExplosivePinPull ─────────── from Explosive.luau         │
+  │            ExplosiveAmmo ────────────── from Explosive.luau         │
+  │  Fires:    ExplosiveGFX <=============  all clients                 │
+  │            ExplosiveConcuss <────────── to affected client          │
+  │            ExplosiveAmmo <───────────── to requesting client        │
+  │  Calls:    shared.VoicePlay (GrenadeNearby, ThrowingGrenade)        │
+  └─────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  TREKVoiceServer.luau                                               │
+  │  Purpose: Central voice reaction hub                                │
+  │  Requires: TREKVoiceConfig                                          │
+  │  Listens:  VoicePlayRequest ─────────── from Gun/Melee/Explosive    │
+  │  Fires:    VoicePlayBroadcast <======== all clients                 │
+  │  Writes:   shared.VoicePlay (cross-script server API)               │
+  │                                                                     │
+  │  Callers of shared.VoicePlay:                                       │
+  │    TREKServerDamage  (Hit, CauseDamage)                             │
+  │    TREKServerExplosive (GrenadeNearby, ThrowingGrenade)             │
+  │    TREKDynamicWeapons (BackpackIgnited)                             │
+  │    TREKGibsModule    (VoicesOfTheDamned)                            │
+  │    TBurning          (Burning, BurnDeath)                           │
+  └─────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  TREKDynamicWeapons.luau                                            │
+  │  Purpose: Destructible weapon parts, backpack detonation            │
+  │  Requires: TREKExplosionModule                                      │
+  │  Fires:    DynamicWeaponDestroyed <──── to owning client            │
+  │            DestructionFX <============= all clients                 │
+  │  Calls:    shared.VoicePlay (BackpackIgnited)                       │
+  │  Sets:     _destroyed, TakedownActive, DynamicDisabled              │
+  └─────────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────┐  ┌──────────────────────┐
+  │  TREKProjectileRenderServer.luau         │  │ TREKRayRenderServer  │
+  │  Relays ProjectileRemote to all clients  │  │ Relays RayRemote     │
+  │  Listens: ProjectileRemote (from Gun)    │  │ to all clients       │
+  │  Fires:   ProjectileRemote <====== all   │  │ Same relay pattern   │
+  └──────────────────────────────────────────┘  └──────────────────────┘
+
+  ┌──────────────────────────┐  ┌──────────────────────────────────────┐
+  │  TREKServerAmmo.luau     │  │ TREKHolsterService.luau              │
+  │  Listens: AmmoRemote     │  │ No remotes. Reads shared.S only.     │
+  │  Reads:   shared.S       │  │ Manages holstered weapon visuals.    │
+  └──────────────────────────┘  └──────────────────────────────────────┘
+
+  ┌──────────────────────────┐
+  │  RagdollCorpses.luau     │
+  │  Standalone. No links.   │
+  └──────────────────────────┘
+
+
+================================================================================
+ LAYER 3: SERVER STORAGE MODULES (required by server scripts)
+================================================================================
+
+  ┌───────────────────────────────────────────────────────────────────┐
+  │  TREKDamageModule.luau                                            │
+  │  Core damage processing. Required by:                             │
+  │    TREKServerDamage, TREKServerMelee, TREKServerExplosive         │
+  │  Reads:  TBurningActive attr (skip burn re-apply)                 │
+  │  Clones: TBurning.luau onto burning characters                    │
+  └───────────────────────────────────────────────────────────────────┘
+       │
+       ▼
+  ┌───────────────────────────────────────────────────────────────────┐
+  │  TBurning.luau  (cloned onto character at runtime)                │
+  │  Requires: LeaderBoardModule (pcall)                              │
+  │  Sets:     TBurningActive, TakedownActive, MovementAnimsLocked    │
+  │  Calls:    shared.VoicePlay (Burning, BurnDeath)                  │
+  └───────────────────────────────────────────────────────────────────┘
+
+  ┌───────────────────────────────────────────────────────────────────┐
+  │  TREKExplosionModule.luau                                         │
+  │  Explosion VFX + damage. Required by:                             │
+  │    TREKServerGeneral, TREKServerExplosive, TREKDynamicWeapons     │
+  │  Requires: LeaderBoardModule, EffectsModule, TREKDamageModule     │
+  │  Fires:    Explosion <============ all clients                    │
+  └───────────────────────────────────────────────────────────────────┘
+
+  ┌────────────────────────────────┐  ┌────────────────────────────────┐
+  │  TREKGibsModule.luau           │  │  TREKServerFunctions.luau      │
+  │  Gib/dismemberment effects     │  │  Utility: config lookup        │
+  │  Calls: shared.VoicePlay       │  │  Reads: shared.S, TConfigToUse │
+  │  Clones: TBleeding onto chars  │  └────────────────────────────────┘
+  └────────────────────────────────┘
+
+  ┌────────────────────────────────┐
+  │  TBleeding.luau                │
+  │  Standalone DOT. No links.     │
+  └────────────────────────────────┘
+
+
+================================================================================
+ LAYER 4: TOOL SCRIPTS (ServerStorage, cloned into tools at runtime)
+================================================================================
+
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  Gun.luau  (LocalScript inside each gun tool)                       │
+  │                                                                     │
+  │  REQUIRES (11 modules):                                             │
+  │    MouseModuleV2, ControlsModule, EffectsModule,                    │
+  │    ImpactParticlesModule, TREKUniversalFunctions, CameraShaker,     │
+  │    FastCastRedux, Spring, TREKViewmodel, TREKBipodController,       │
+  │    AnimEventHandler                                                 │
+  │                                                                     │
+  │  FIRES TO SERVER:                                                   │
+  │    Damage, GFX, AmmoRemote, Reload, Explosion,                      │ 
+  │    ProjectileRemote, RayRemote, VoicePlayRequest                    │
+  │                                                                     │
+  │  LISTENS FROM SERVER:                                               │
+  │    Reload.OnClientEvent                                             │
+  │                                                                     │
+  │  FIRES BINDABLES:                                                   │
+  │    ProjectileBind, RayBind (to local render scripts)                │
+  │                                                                     │ 
+  │  READS ATTRS: BipodActive, BipodDeploying, TBurningActive,          │
+  │               DynamicDisabled, PostDestructionMode                  │
+  │  SETS ATTRS:  YawLockActive, PatrolActive, InspectActive            │
+  └─────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  Melee.luau  (LocalScript inside each melee tool)                   │
+  │  Requires: MouseModuleV2, ControlsModule, TREKUniversalFunctions,   │
+  │            TREKViewmodel                                            │
+  │  Fires:    GFX, MeleeDamage, TakedownRequest, VoicePlayRequest      │
+  │  Listens:  TakedownSync, TakedownCancel                             │
+  │  Sets:     YawLockActive, TakedownActive, InspectActive             │
+  │  Disables: Directional Walking Script, MovementLean,                │
+  │            Realistic Head Movement, CameraBobbing, Animate          │
+  └─────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  Explosive.luau  (LocalScript inside each explosive tool)           │
+  │  Requires: ControlsModule                                           │
+  │  Fires:    ExplosiveThrow, ExplosiveDrop, ExplosivePinPull,         │
+  │            ExplosiveAmmo, GFX                                       │
+  │  Listens:  ExplosiveAmmo, ExplosiveConcuss, ExplosiveGFX            │
+  │  Sets:     YawLockActive, AimLockDisabled                           │
+  └─────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+ LAYER 5: CLIENT SCRIPTS (StarterPlayerScripts)
+================================================================================
+
+  ┌───────────────────────────────────────────────────────────────────┐
+  │  GFXRender.luau — Master client VFX handler                       │
+  │  Requires: CameraShaker, EffectsModule, ImpactParticlesModule,    │
+  │            TREKUniversalFunctions, TREKViewmodel                  │
+  │  Listens:  GFX, Explosion, TakedownSync, TakedownCancel           │
+  │  Sets:     TakedownActive (on character)                          │
+  │  Disables: Directional Walking Script, MovementLean,              │
+  │            Realistic Head Movement, CameraBobbing, Animate        │
+  └───────────────────────────────────────────────────────────────────┘
+
+  ┌───────────────────────────────────────┐ ┌────────────────────────────┐
+  │  ProjectileRender.luau                │ │  RayRenderer.luau          │
+  │  Requires: FastCastRedux,             │ │  Dynamic requires from     │
+  │    EffectsModule, ImpactParticles     │ │  RayTypes folder           │
+  │  Listens: ProjectileRemote (server)   │ │  Listens: RayRemote,       │
+  │           ProjectileBind (bindable)   │ │           RayBind          │
+  └───────────────────────────────────────┘ └────────────────────────────┘
+
+  ┌───────────────────────────────────────┐ ┌────────────────────────────┐
+  │  TREKVoiceClient.luau                 │ │  TREKDynamicWeapons_Client │
+  │  Listens: VoicePlayBroadcast          │ │  Listens:                  │
+  │  Plays 3D sound on speaker's Head     │ │    DynamicWeaponDestroyed  │
+  │  Shows subtitle BillboardGui          │ │    DestructionFX           │
+  └───────────────────────────────────────┘ │  Sets: PostDestructionMode │
+                                            │  Disables: same 5 scripts  │
+                                            └────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │  Directional Walking Script.luau — Crouch-only hip rotation          │
+  │  Reads: IsCrouching, BipodActive, BipodDeploying, IsProne,           │
+  │         TakedownActive, InTakedown                                   │
+  │  Pure client. No remotes, no shared, no requires.                    │
+  │  Externally disabled by: Melee, GFXRender, TREKDynamicWeapons_Cl,    │
+  │                          TREKBipodController                         │
+  └──────────────────────────────────────────────────────────────────────┘
+
+  Leaf/utility scripts (no TREK interconnections):
+    CameraFix, CustomShiftLock/SmoothShiftLock, qPerfectionWeld,
+    Maid, Spring, FirstPersonBodyTransparencyRemover, MotionBlur,
+    AtomicBinding
+
+
+================================================================================
+ LAYER 6: CHARACTER SCRIPTS (StarterCharacterScripts)
+================================================================================
+
+  ┌───────────────────────────────────────────────────────────────────┐
+  │  Animate.luau — Movement animation state machine                  │
+  │  Reads: IsProne, IsCrouching                                      │
+  │  Externally disabled by: Melee, GFXRender, TREKDynamicWeapons_Cl  │
+  │  Core dependency: everything that sets movement state affects this│
+  └───────────────────────────────────────────────────────────────────┘
+
+  ┌───────────────────────────────────────────────────────────────────┐
+  │  AimReplication.luau — Shoulder pitch for networked aim           │
+  │  Reads: TakedownActive, BipodActive, BipodDeploying, PatrolActive │
+  │         InspectActive, AimPitch, IsProne, YawLockActive,          │
+  │         AimLockDisabled                                           │
+  │  Pure reader — never sets attributes, never fires remotes.        │
+  │  Joint writes: Right Shoulder, Left Shoulder, toolAnim C0         │
+  └───────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────┐  ┌────────────────────────────────┐
+  │  Roll.luau (Dash/Dive)           │  │  Realistic Head Movement.luau  │
+  │  Requires: ControlsModule,       │  │  Reads: BipodActive,           │
+  │    AnimEventHandler              │  │         BipodDeploying         │
+  │  Reads: IsProne, IsSprinting     │  │  Writes: Torso.Neck.C0         │
+  │  Sets:  IsProne, ProneEntryOffset│  │  Disabled by: Melee, GFXRender │
+  │  Calls: ControlsModule.startProne│  │    TREKDynamicWeapons_Client   │
+  └──────────────────────────────────┘  └────────────────────────────────┘
+
+  ┌──────────────────────────────────┐
+  │  CameraBobbing.luau              │
+  │  Reads: IsSprinting              │
+  │  Disabled by: BipodController,   │
+  │    Melee, GFXRender, DynWeapons  │
+  └──────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │  OneLifeScripts/                                                     │
+  │    ControlsModule.luau — State machine (crouch/prone/sprint)         │
+  │      Sets: IsCrouching, IsProne, IsSprinting (on character)          │
+  │      Required by: Gun, Melee, Explosive, Roll                        │
+  │    MovementHandler.luau — Key bindings (C, X, sprint)                │
+  │      Reads: controls.crouching.Value, IsProne                        │
+  │    TeamIndicator.luau — Team UI. No TREK links.                      │
+  │    UIHandler.luau — Game-mode UI. No TREK links.                     │
+  └──────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+ LAYER 7: REPLICATED STORAGE MODULES (shared between client + server)
+================================================================================
+
+  ┌───────────────────────────────────────────────────────────────────┐
+  │  TREKBipodController.luau — Client-side bipod orchestration       │
+  │  Fires:   BipodDeploy, BipodUndeploy, BipodAim (to server)        │
+  │  Uses:    ToggleShiftLock, EditConfig (BindableEvents)            │
+  │  Reads:   BipodActive, BipodDeploying, CanDeployBipod,            │
+  │           TakedownActive, InTakedown, MovementAnimsLocked         │
+  │  Sets:    MovementAnimsLocked                                     │
+  │  Disables: Directional Walking Script, MovementLean, CameraBobbing│
+  │  Required by: Gun.luau                                            │
+  └───────────────────────────────────────────────────────────────────┘
+
+  ┌───────────────────────────────────┐  ┌──────────────────────────────┐
+  │  ProneController.luau             │  │  TREKViewmodel.luau          │
+  │  Reads: ProneEntryOffset          │  │  Requires: Spring            │
+  │  Sets:  ProneActive, ProneYawOff  │  │  Fires: ReplicateAim         │
+  │  Required by: ControlsModule      │  │  Required by: Gun, Melee,    │
+  │  Reads: shared.S                  │  │    GFXRender                 │
+  └───────────────────────────────────┘  └──────────────────────────────┘
+
+  ┌───────────────────────────────────┐  ┌──────────────────────────────┐
+  │  TREKVoiceConfig.luau             │  │  TREKUniversalFunctions.luau │
+  │  Pure data (chance/cooldown tbl)  │  │  Pure utility functions      │
+  │  Required by: TREKVoiceServer     │  │  Required by: Gun, Melee,    │
+  │                                   │  │    TREKServerDamage, GFXRend │
+  └───────────────────────────────────┘  └──────────────────────────────┘
+
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │  LeaderBoardModule.luau — Kill feed, scoring, team tracking          │
+  │  Fires: LocalSound:FireClient, Feed:FireClient                       │
+  │  Required by: TREKDamageModule, TREKExplosionModule, TBurning        │
+  │  Stored in: shared.S.trekFuncs by bootstrap                          │
+  └──────────────────────────────────────────────────────────────────────┘
+
+  Pure utility modules (no TREK interconnections):
+    GlobalConfigs, Spring, CameraShaker, CameraShakeInstance,
+    CameraShakePresets, EffectsModule, ImpactParticlesModule,
+    AnimEventHandler, PredictProjectile, MouseModuleV2,
+    FastCastRedux (+ ActiveCast, Signal, Table, TypeDefs, TypeMarshaller)
+
+
+================================================================================
+ STARTERGUI
+================================================================================
+
+  Tilt.luau — Pure camera roll effect. No TREK connections.
+
+
+================================================================================
+ COMMUNICATION CHANNEL SUMMARY
+================================================================================
+
+  REMOTE EVENTS (Client → Server):
+    Damage, GFX, AmmoRemote, Reload, Explosion, ProjectileRemote,
+    RayRemote, VoicePlayRequest, BipodDeploy, BipodUndeploy, BipodAim,
+    MeleeDamage, TakedownRequest, ExplosiveThrow, ExplosiveDrop,
+    ExplosivePinPull, ExplosiveAmmo, ReplicateAim
+
+  REMOTE EVENTS (Server → Client/All):
+    GFX, Explosion, TakedownSync, TakedownCancel, VoicePlayBroadcast,
+    ExplosiveGFX, ExplosiveConcuss, ExplosiveAmmo, DynamicWeaponDestroyed,
+    DestructionFX, ProjectileRemote, RayRemote, SystemMessage, Feed,
+    LocalSound, Reload
+
+  BINDABLE EVENTS (Local):
+    ProjectileBind, RayBind        (Gun → local render scripts)
+    ToggleShiftLock, EditConfig    (BipodController → SmoothShiftLock)
+
+  SHARED GLOBALS:
+    shared.S              Written by bootstrap, read by everything
+    shared.S.globalConfig Written by bootstrap, read by Gun/effects
+    shared.S.trekFuncs    LeaderBoardModule (kill feed, scoring)
+    shared.S.trekGibs     TREKGibsModule
+    shared.S.trekServerFuncs  TREKServerFunctions (config lookup)
+    shared.VoicePlay      Written by TREKVoiceServer, called by 5 scripts
+    shared.BipodForceExit Written by TREKServerBipod, callable anywhere
+    shared.Cursors        Read by Gun, Melee, Explosive (cursor icons)
+
+  ATTRIBUTE REGISTRY (character unless noted):
+    IsCrouching        Set: ControlsModule    Read: Animate, DirWalk
+    IsProne            Set: ControlsModule/Roll  Read: Animate, AimRep, Roll, DirWalk
+    IsSprinting        Set: ControlsModule    Read: CameraBobbing, Roll
+    BipodActive        Set: TREKServerBipod   Read: Gun, AimRep, RHM, BipodCtrl, DirWalk
+    BipodDeploying     Set: TREKServerBipod   Read: Gun, AimRep, RHM, BipodCtrl, DirWalk
+    TakedownActive     Set: Melee/TBurning/DynWpn  Read: AimRep, BipodCtrl, DirWalk
+    InTakedown         Set: TREKServerMelee   Read: TREKServerBipod, BipodCtrl, DirWalk
+    PatrolActive       Set: Gun.luau          Read: AimReplication
+    InspectActive      Set: Gun.luau          Read: AimReplication
+    YawLockActive      Set: Gun/Melee/Explosive  Read: AimReplication
+    AimLockDisabled    Set: Explosive          Read: AimReplication
+    AimPitch           Set: TREKServerGeneral  Read: AimReplication
+    ProneActive        Set: ProneController    Read: (replication)
+    ProneYawOffset     Set: ProneController    Read: (replication)
+    ProneEntryOffset   Set: Roll.luau          Read: ProneController
+    TBurningActive     Set: TBurning           Read: Gun, TREKDamageModule
+    MovementAnimsLocked Set: TBurning/BipodCtrl  Read: BipodController
+    PostDestructionMode Set: DynWeapons_Client  Read: Gun.luau (anim remap)
+    DynamicDisabled    Set: TREKDynamicWeapons  Read: Gun.luau
+    CanDeployBipod     Set: level designer     Read: TREKServerBipod, BipodCtrl
+                       (on workspace parts)
+
+  SCRIPTS EXTERNALLY DISABLED (Enabled=false):
+    "Directional Walking Script" — by BipodCtrl, Melee, GFXRender, DynWpnClient
+    "MovementLean"               — by BipodCtrl, Melee, GFXRender, DynWpnClient
+    "CameraBobbing"              — by BipodCtrl, Melee, GFXRender, DynWpnClient
+    "Realistic Head Movement"    — by Melee, GFXRender, DynWpnClient (NOT bipod)
+    "Animate"                    — by Melee, GFXRender, DynWpnClient
+
+
+================================================================================
+ DEPENDENCY CHAINS (follow the arrows)
+================================================================================
+
+  DAMAGE PIPELINE:
+    Gun/Melee/Explosive (client)
+      ──[Damage/MeleeDamage]──> TREKServerDamage / TREKServerMelee (server)
+        ~~requires~~> TREKDamageModule
+          ~~requires~~> LeaderBoardModule ──[Feed/LocalSound]──> client
+        ──[shared.VoicePlay]──> TREKVoiceServer ──[VoicePlayBroadcast]──> TREKVoiceClient
+
+  EXPLOSION PIPELINE:
+    Explosive (client)
+      ──[ExplosiveThrow]──> TREKServerExplosive
+        ~~requires~~> TREKExplosionModule
+          ──[Explosion]──> all clients (GFXRender handles VFX)
+
+  BIPOD PIPELINE:
+    Gun.luau ~~requires~~> TREKBipodController
+      ──[BipodDeploy/Undeploy]──> TREKServerBipod
+        ......BipodActive/BipodDeploying......> AimRep, RHM, DirWalk, Gun
+
+  PROJECTILE/RAY RENDER PIPELINE:
+    Gun.luau ──[ProjectileRemote]──> TREKProjectileRenderServer <=====> ProjectileRender
+    Gun.luau ──[RayRemote]──> TREKRayRenderServer <=====> RayRenderer
+    Gun.luau - -[ProjectileBind]- -> ProjectileRender (local fast path)
+    Gun.luau - -[RayBind]- -> RayRenderer (local fast path)
+
+  MOVEMENT STATE PIPELINE:
+    MovementHandler (key input)
+      ──> ControlsModule (state machine)
+        ......IsCrouching......> Animate, Directional Walking Script
+        ......IsProne......> Animate, AimReplication, Roll
+        ......IsSprinting......> CameraBobbing, Roll
+
+  VOICE PIPELINE:
+    Client triggers: Gun/Melee/Explosive ──[VoicePlayRequest]──> TREKVoiceServer
+    Server triggers: TREKServerDamage, TBurning, TREKGibsModule, TREKDynamicWeapons
+      ──[shared.VoicePlay()]──> TREKVoiceServer
+        ──[VoicePlayBroadcast]──> TREKVoiceClient (3D sound + subtitle)
+
+  DYNAMIC WEAPONS PIPELINE:
+    TREKDynamicWeapons (server, monitors tool health)
+      ──[DynamicWeaponDestroyed]──> TREKDynamicWeapons_Client
+        ......PostDestructionMode......> Gun.luau (remap animations)
+      ──[DestructionFX]──> all clients (visual effects)
+
+
+================================================================================
